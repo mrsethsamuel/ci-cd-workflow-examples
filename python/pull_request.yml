@@ -1,0 +1,55 @@
+name: "Pull Request Check Python CI"
+run-name: "PR Check run '${{ github.head_ref || github.ref_name }}'"
+on:
+  workflow_call:
+    inputs:
+      PYTHON_VERSION:
+        required: true
+        type: string
+    secrets:
+      GHB_USER_TOKEN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true        
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - python-version: ${{ inputs.PYTHON_VERSION }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pylint
+
+      - name: Analysing the code with pylint
+        run: |
+          pylint $(git ls-files '*.py')
+
+      - name: Send Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: "" #Channel ID
+          username: "Github Action"
+          author_name: "CI Details"
+          # if_mention: "failure,cancelled"
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # optional
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+          MATRIX_CONTEXT: ${{ toJson(matrix) }} # required
+        if: always() # Pick up events even if the job fails or is canceled.

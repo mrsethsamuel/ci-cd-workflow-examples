@@ -1,0 +1,169 @@
+name: "Nodejs CI Release"
+run-name: "Nodejs CI Release run '${{ github.head_ref || github.ref_name }}'"
+env:
+  REGISTRY: "registry.digitalocean.com/mrsethsamuel"
+on:
+  workflow_call:
+    inputs:
+      NODE_VERSION:
+        required: true
+        type: string
+      IMAGE_NAME:
+        required: true
+        type: string
+      K8S_PATH:
+        required: true
+        type: string
+    secrets:
+      GHB_USER_TOKEN:
+        required: true
+      DIGITALOCEAN_ACCESS_TOKEN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          submodules: "true"
+          token: ${{ secrets.GHB_USER_TOKEN }}
+
+      - name: Lint Commit Messages
+        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/tms-admin-web' && github.repository != 'YouverifyHQ/tms-website' && github.repository != 'YouverifyHQ/tms-backoffice-api' && github.repository != 'YouverifyHQ/tms-device-api' && github.repository != 'YouverifyHQ/tms-citizen-api' }}
+        uses: wagoid/commitlint-github-action@v2
+
+      - name: Determine Dockerfile
+        id: determine_dockerfile
+        run: |
+          if [ "${{ inputs.IMAGE_NAME }}" = "tms-backoffice-worker" ]; then
+            DOCKERFILE="Worker_Dockerfile"
+          elif [ "${{ inputs.IMAGE_NAME }}" = "tms-citizen-worker" ]; then
+            DOCKERFILE="Worker_Dockerfile"
+          else
+            DOCKERFILE="Dockerfile"
+          fi
+          echo "dockerfile=$DOCKERFILE" >> $GITHUB_ENV
+
+      - name: Lint Dockerfile
+        uses: brpaz/hadolint-action@master
+        with:
+          dockerfile: ${{ env.dockerfile }}
+
+      - name: Save/restore Cache Dependencies
+        uses: actions/cache@v3
+        id: yarn-cache
+        with:
+          path: ./node_modules
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+
+      - name: Use Node.js ${{ inputs.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ inputs.NODE_VERSION }}
+
+      - name: Install dependencies
+        if: steps.yarn-cache.outputs.cache-hit != 'true'
+        run: yarn install
+
+      - name: Lint files
+        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/tms-admin-web' && github.repository != 'YouverifyHQ/tms-website' && github.repository != 'YouverifyHQ/tms-backoffice-api' && github.repository != 'YouverifyHQ/tms-device-api' && github.repository != 'YouverifyHQ/tms-citizen-api'}}
+        run: yarn lint
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          version: 1.57.0
+
+      - name: Create IMAGE_VERSION
+        run: |
+          echo "PROD_IMAGE_VERSION=$(echo ${{ github.sha }} | head -c7)-prod" >> $GITHUB_ENV
+          echo "STAG_IMAGE_VERSION=$(echo ${{ github.sha }} | head -c7)-stag" >> $GITHUB_ENV
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 600
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.PROD_IMAGE_VERSION }}, ${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.STAG_IMAGE_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          file: ${{ env.dockerfile }}
+
+      - name: Push Code to Master Branch
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GHB_USER_TOKEN }}
+          branch: master
+          force: true
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          repository: YouverifyHQ/services-kubernetes-manifests
+          ref: master
+          token: ${{ secrets.GHB_USER_TOKEN }}
+          force: true
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v1
+        with:
+          kustomize-version: "4.0.4"
+
+      - name: Update Production Kubernetes resources
+        run: |
+          cd ${{ inputs.K8S_PATH }}
+          kustomize edit set image image-name=${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.PROD_IMAGE_VERSION }}
+          cat kustomization.yaml
+
+      - name: Update Staging Kubernetes resources
+        if: ${{ github.repository == 'YouverifyHQ/address-service' || github.repository == 'YouverifyHQ/address-service-worker' || github.repository == 'YouverifyHQ/aml-service' || github.repository == 'YouverifyHQ/aml-service-worker' || github.repository == 'YouverifyHQ/auditlog-service' || github.repository == 'YouverifyHQ/auditlog-service-worker' || github.repository == 'YouverifyHQ/billing-service' ||  github.repository == 'YouverifyHQ/billing-service-worker' || github.repository == 'YouverifyHQ/company-search-service' || github.repository == 'YouverifyHQ/company-search-service-worker' ||  github.repository == 'YouverifyHQ/identity-service' ||  github.repository == 'YouverifyHQ/identity-service-worker' || github.repository == 'YouverifyHQ/notification-service' || github.repository == 'YouverifyHQ/notification-service-worker' || github.repository == 'YouverifyHQ/vform-service-v2' || github.repository == 'YouverifyHQ/vform-service-worker' || github.repository == 'YouverifyHQ/yvos-api-gateway' }}
+        run: |
+          K8S_PATH=${{inputs.K8S_PATH }}
+          K8S_PATH="${K8S_PATH/production/staging}"
+          cd $K8S_PATH
+          kustomize edit set image image-name=${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.STAG_IMAGE_VERSION }}
+          cat kustomization.yaml
+
+      - name: Commit Configuration changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit -am "Bump docker tag && ${{github.event.commits[0].message}}"
+
+      - name: Push configuration changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GHB_USER_TOKEN }}
+          branch: master
+          repository: YouverifyHQ/services-kubernetes-manifests
+
+      - name: Send Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: "" #Channel ID
+          username: "Github Action"
+          author_name: "CI Details"
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # optional
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+          MATRIX_CONTEXT: ${{ toJson(matrix) }} # required
+        if: always() # Pick up events even if the job fails or is canceled.

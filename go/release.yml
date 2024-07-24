@@ -1,0 +1,132 @@
+name: "GO CI Release"
+run-name: "GO CI Release run '${{ github.head_ref || github.ref_name }}'"
+env:
+  REGISTRY: "registry.digitalocean.com/mrsethsamuel"
+on:
+  workflow_call:
+    inputs:
+      GO_VERSION:
+        required: true
+        type: string
+      IMAGE_NAME:
+        required: true
+        type: string
+      K8S_PATH:
+        required: true
+        type: string
+    secrets:
+      GHB_USER_TOKEN:
+        required: true
+      DIGITALOCEAN_ACCESS_TOKEN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+          
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - go-version: ${{ inputs.GO_VERSION }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          submodules: "true"
+          token: ${{ secrets.GHB_USER_TOKEN }}
+
+      - name: Lint Commit Messages
+        uses: wagoid/commitlint-github-action@v2
+
+      - name: Use Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: go.sum
+
+      - name: Lint Dockerfile
+        uses: brpaz/hadolint-action@master
+        with:
+          dockerfile: "Dockerfile"
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          version: 1.57.0
+
+      - name: Create IMAGE_VERSION
+        run: echo "IMAGE_VERSION=$(echo ${{ github.sha }} | head -c7)-prod" >> $GITHUB_ENV
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 600
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false 
+
+      - name: Push Code to Master Branch
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GHB_USER_TOKEN }}
+          branch: master
+          force: true
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          repository: YouverifyHQ/services-kubernetes-manifests
+          ref: master
+          token: ${{ secrets.GHB_USER_TOKEN }}
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v1
+        with:
+          kustomize-version: "4.0.4"
+
+      - name: Update Kubernetes resources
+        run: |
+          cd ${{ inputs.K8S_PATH }}
+          kustomize edit set image image-name=${{ env.REGISTRY }}/${{ inputs.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+          cat kustomization.yaml
+
+      - name: Commit Configuration changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit -am "Bump docker tag && ${{github.event.commits[0].message}}"
+
+      - name: Push configuration changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GHB_USER_TOKEN }}
+          branch: master
+          force: true
+          repository: YouverifyHQ/services-kubernetes-manifests
+
+      - name: Send Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: "" #Channel ID
+          username: "Github Action"
+          author_name: "CI Details"
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # optional
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+          MATRIX_CONTEXT: ${{ toJson(matrix) }} # required
+        if: always() # Pick up events even if the job fails or is canceled.

@@ -1,0 +1,66 @@
+name: "Pull Request Check Go CI"
+run-name: "PR Check run '${{ github.head_ref || github.ref_name }}'"
+on:
+  workflow_call:
+    inputs:
+      GO_VERSION:
+        required: true
+        type: string
+    secrets:
+      GHB_USER_TOKEN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - go-version: ${{ inputs.GO_VERSION }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          submodules: "true"
+          token: ${{ secrets.GHB_USER_TOKEN }}
+
+      - name: Lint Commit Messages
+        uses: wagoid/commitlint-github-action@v2
+
+      - name: Use Go ${{ matrix.go-version }} 
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: go.sum
+
+      - name: Lint Dockerfile
+        uses: brpaz/hadolint-action@master
+        with:
+          dockerfile: "Dockerfile"
+
+      - name: download, build, test and generate coverage report
+        run: |
+          go mod download
+          go mod tidy
+          GOOS=linux go build -v ./...
+
+      - name: Send Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: "" #Channel ID
+          username: "Github Action"
+          author_name: "CI Details"
+          # if_mention: "failure,cancelled"
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took # selectable (default: repo,message)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # optional
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+          MATRIX_CONTEXT: ${{ toJson(matrix) }} # required
+        if: always() # Pick up events even if the job fails or is canceled.
