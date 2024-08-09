@@ -38,7 +38,6 @@ jobs:
           token: ${{ secrets.GHB_USER_TOKEN }}
 
       - name: Lint Commit Messages
-        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/tms-admin-web' && github.repository != 'YouverifyHQ/tms-website' && github.repository != 'YouverifyHQ/tms-backoffice-api' && github.repository != 'YouverifyHQ/tms-device-api' && github.repository != 'YouverifyHQ/tms-citizen-api' }}
         uses: wagoid/commitlint-github-action@v2
 
       - name: Determine Dockerfile
@@ -75,7 +74,6 @@ jobs:
         run: yarn install
 
       - name: Lint files
-        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/tms-admin-web' && github.repository != 'YouverifyHQ/tms-website' && github.repository != 'YouverifyHQ/tms-backoffice-api' && github.repository != 'YouverifyHQ/tms-device-api' && github.repository != 'YouverifyHQ/tms-citizen-api'}}
         run: yarn lint
 
       - name: Install doctl
@@ -133,7 +131,6 @@ jobs:
           cat kustomization.yaml
 
       - name: Update Staging Kubernetes resources
-        if: ${{ github.repository == 'YouverifyHQ/address-service' || github.repository == 'YouverifyHQ/address-service-worker' || github.repository == 'YouverifyHQ/aml-service' || github.repository == 'YouverifyHQ/aml-service-worker' || github.repository == 'YouverifyHQ/auditlog-service' || github.repository == 'YouverifyHQ/auditlog-service-worker' || github.repository == 'YouverifyHQ/billing-service' ||  github.repository == 'YouverifyHQ/billing-service-worker' || github.repository == 'YouverifyHQ/company-search-service' || github.repository == 'YouverifyHQ/company-search-service-worker' ||  github.repository == 'YouverifyHQ/identity-service' ||  github.repository == 'YouverifyHQ/identity-service-worker' || github.repository == 'YouverifyHQ/notification-service' || github.repository == 'YouverifyHQ/notification-service-worker' || github.repository == 'YouverifyHQ/vform-service-v2' || github.repository == 'YouverifyHQ/vform-service-worker' || github.repository == 'YouverifyHQ/yvos-api-gateway' }}
         run: |
           K8S_PATH=${{inputs.K8S_PATH }}
           K8S_PATH="${K8S_PATH/production/staging}"
