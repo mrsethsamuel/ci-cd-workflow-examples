@@ -28,7 +28,6 @@ jobs:
           token: ${{ secrets.GHB_USER_TOKEN }}
 
       - name: Lint Commit Messages
-        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/address-field-portal'   }}
         uses: wagoid/commitlint-github-action@v2
 
       - name: Cache Files
@@ -53,7 +52,6 @@ jobs:
           dockerfile: "Dockerfile"
 
       - name: Lint files
-        if: ${{ github.repository != 'YouverifyHQ/transaction-monitoring-web-portal' && github.repository != 'YouverifyHQ/tms-backoffice-api' }}
         run: yarn lint
 
       - name: build, test and generate coverage report
