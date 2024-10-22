@@ -1,0 +1,110 @@
+name: Azure VM Deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master # or the branch you want to trigger this on
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-to-azure:
+    runs-on: ubuntu-latest
+
+    env:
+      AZURE_RESOURCE_GROUP: k8s-dev_group # Set your resource group name here
+      VM_NAME: myvm001 # Set your VM name here in lowecase
+      DOCKER_IMAGE: sdharmarajah/animated-drawings:latest # Updated Docker image
+      API_PORT: 8080 # Set the API port here
+      VM_SIZE: Standard_D2s_v3 # Set your VM size here
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # creds: ${{ secrets.AZURE_CREDENTIALS }}  # Store your Azure credentials in GitHub secrets
+
+      - name: Check if VM exists
+        id: check-vm
+        run: |
+          if az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "VM exists."
+          echo "exists=true" >> $GITHUB_ENV
+          else
+          echo "VM does not exist."
+          echo "exists=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Azure VM
+        if: env.exists == 'false'
+        run: |
+          az vm create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --image Ubuntu2204 \
+            --size ${{ env.VM_SIZE }} \
+
+      - name: Configure Network Security Group
+        run: |
+          # Create a Network Security Group rule to allow access only to the API port (e.g., 8080)
+          az network nsg rule create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --nsg-name ${{ env.VM_NAME }}NSG \
+            --name AllowAPI \
+            --protocol tcp \
+            --priority 1001 \
+            --destination-port-range ${{ env.API_PORT }} \
+            --access Allow
+
+      - name: Associate NSG with VM's network interface
+        run: |
+          az network nic update \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }}VMNic \
+            --network-security-group ${{ env.VM_NAME }}NSG
+
+      - name: Deploy Docker image on VM
+        run: |
+          # Install Docker on the VM
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --command-id RunShellScript \
+            --scripts "sudo apt-get update && sudo apt-get install -y docker.io"
+
+      - name: Run the Docker image from Docker Hub
+        run: |
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --command-id RunShellScript \
+            --scripts "sudo docker run -d -p ${{ env.API_PORT }}:${{ env.API_PORT }} ${{ env.DOCKER_IMAGE }}"
+
+      - name: Assign Static Public IP
+        run: |
+          az network public-ip update \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }}PublicIP \
+            --allocation-method Static
+
+      - name: Output Public IP
+        run: |
+          PUBLIC_IP=$(az vm list-ip-addresses \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --query "[].virtualMachine.network.publicIpAddresses[].ipAddress" \
+            --output tsv)
+          echo "Public IP: $PUBLIC_IP"
+          echo "::set-output name=public_ip::$PUBLIC_IP"
+
+      - name: Map Domain Name to IP
+        run: |
+          echo "Use your DNS provider's interface or API to point your domain to ${{ steps.output.public_ip }}"
